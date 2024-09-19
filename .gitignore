@@ -2,10 +2,6 @@
 *.zarr
 *.tiff
 *.tif
-**/data/
-**/mnist_data/
-**/data/
-**/mnist_data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -136,5 +132,3 @@ pyrepo
 /notebooks/cellprofiler_benchmark_static/
 /notebooks/dataset/
 /notebooks/static/
-
-/src/
