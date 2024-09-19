@@ -7,7 +7,8 @@
 #SBATCH --time=24:00:00
 #SBATCH --output load-%j.out
 
+source /lab/barcheese01/miniconda3/etc/profile.d/conda.sh
+
 conda activate ops_dl
 
-python load.py
-
+python ../scripts/data/load.py
