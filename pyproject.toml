@@ -1,19 +1,18 @@
 [build-system]
-build-backend = "setuptools.build_meta"
 requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "embed_time"
-description = "DL@MBL course repository for the embed_time team"
+name = "OpticalPooledScreens_DL"
+description = "General DL repository for OPS work"
 readme = "README.md"
 requires-python = ">=3.7"
-classifiers = [
-  "Programming Language :: Python :: 3",
-]
-keywords = []
 license = { text = "BSD 3-Clause License" }
 authors = [
-    { email = "ryan.savill@web.de ", name = "DLMBL " },
+    { name = "DLMBL", email = "ryan.savill@web.de" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
 ]
 dynamic = ["version"]
 dependencies = [
@@ -23,47 +22,19 @@ dependencies = [
     "torchvision",
     "scikit-image",
     "matplotlib",
-    "tqdm",
-    "pathlib"
-    "torch"
-]
-[project.optional-dependencies]
-dev = [
-    "pandas",
-    "tifffile",
-    "torch",
-    "torchvision",
-    "scikit-image",
-    "matplotlib",
-    "tqdm",
-    "pathlib"
-    "torch",
-    "tensorboard"
-    "zarr",
+    "pathlib",
     "numpy",
-    "torch",
-    "matplotlib",
-    "pandas",
-    "torchview",
-    "graphviz", 
+    "zarr",
+    "pyyaml",
+    "scikit-learn",
+    "seaborn",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest"
-    "pandas",
-    "tifffile",
-    "torch",
-    "torchvision",
-    "scikit-image",
-    "matplotlib",
     "tqdm",
-    "pathlib"
-    "torch"
-    "zarr",
-    "numpy",
-    "json",
-    "pytorch",
-    "matplotlib",
-    "pandas"
+    "tensorboard",
+    "torchview",
+    "graphviz",
+    "pytest",
 ]

@@ -1,53 +1,64 @@
 # %%
-from models.dataset_static import ZarrCellDataset
-from models.dataloader_static import collate_wrapper
-from funlib.learn.torch.models import Vgg2D
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from src.data.dataset_static import ZarrCellDataset
+from src.data.dataloader_static import collate_wrapper
+from src.data.static_utils import read_config
+from src.models.vgg2d import Vgg2D
 from torchvision.transforms import v2
-from models.static_utils import read_config
 from torch.utils.data import DataLoader
 import torch
-from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
+from datetime import datetime
+
 # %% Load the dataset
 # Define the metadata keys
 metadata_keys = ['gene', 'barcode', 'stage']
 images_keys = ['cell_image']
 crop_size = 96
+channels = [0, 1, 2, 3]
+parent_dir = '/mnt/efs/dlmbl/S-md/'
 normalizations = v2.Compose([v2.CenterCrop(crop_size)])
 yaml_file_path = "/mnt/efs/dlmbl/G-et/yaml/dataset_info_20240901_155625.yaml"
-dataset = "benchmark_nontargeting_barcode"
+dataset = "benchmark"
 csv_file = f"/mnt/efs/dlmbl/G-et/csv/dataset_split_{dataset}.csv"
 label_type = 'barcode'
 balance_classes = True
+output_dir = "/mnt/efs/dlmbl/G-et/"
+find_port = True
 
-save_dir = Path(f"/mnt/efs/dlmbl/G-et/da_testing/vgg2d_{dataset}/{label_type}_{balance_classes}")
-save_dir.mkdir(exist_ok=True, parents=True)
+# Hyperparameters
+batch_size = 16
+num_workers = 8
+epochs = 30
+model_name = "Vgg2D"
+transform = "min"
+
+run_name = f"{model_name}_transform_{transform}_{dataset}"
+
+folder_suffix = datetime.now().strftime("%Y%m%d_%H%M_") + run_name
+log_path = output_dir + "logs/static/Matteo/"+ folder_suffix + "/"
+checkpoint_path = output_dir + "checkpoints/static/Matteo/" + folder_suffix + "/"
 
 df = pd.read_csv(csv_file)
 class_names = df[label_type].sort_values().unique().tolist()
 num_classes = len(class_names)
-
 print(f"Class names: {class_names}")
-
-# Hyperparameters
-batch_size = 16
-num_workers = 16
-epochs = 30
 
 # %% Load the training dataset
 # Create the dataset
 dataset_mean, dataset_std = read_config(yaml_file_path)
 dataset = ZarrCellDataset(
-    parent_dir = '/mnt/efs/dlmbl/S-md/',
+    parent_dir = parent_dir,
     csv_file = csv_file, 
     split='train',
     channels=[0, 1, 2, 3], 
-    mask='min', 
+    mask=transform, 
     normalizations=normalizations,
     interpolations=None, 
     mean=dataset_mean, 
@@ -106,7 +117,7 @@ val_dataloader = DataLoader(
 )
 # %%
 # print the length of both datasets
-len(dataset), len(val_dataset)
+print(len(dataset), len(val_dataset))
 
 # %% Define the model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -176,7 +187,7 @@ for epoch in range(epochs):
         'epoch_val_loss': epoch_val_loss / len(val_dataloader),
         'val_accuracy': correct / len(val_dataset)
     }
-    torch.save(state_dict, save_dir / f"{epoch}.pth")
+    torch.save(state_dict, checkpoint_path + f"epoch_{epoch}.pt")
 
 
 # %% Plot the loss
@@ -189,7 +200,7 @@ plt.legend()
 plt.show()
 
 # %% Save the losses and accuracies
-with open(save_dir / "metrics.csv", "w") as f:
+with open(log_path / "metrics.csv", "w") as f:
     f.write("epoch,loss,val_loss,val_accuracy\n")
     for i in range(epochs):
         f.write(f"{i},{losses[i]},{val_losses[i]},{val_accuracies[i]}\n")
