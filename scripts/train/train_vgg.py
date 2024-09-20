@@ -1,206 +1,290 @@
-# %%
+import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from src.data.dataset_static import ZarrCellDataset
-from src.data.dataloader_static import collate_wrapper
-from src.data.static_utils import read_config
-from src.models.vgg2d import Vgg2D
-from torchvision.transforms import v2
-from torch.utils.data import DataLoader
-import torch
-import numpy as np
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
-import matplotlib.pyplot as plt
-import pandas as pd
-from pathlib import Path
+import argparse
+import socket
+import subprocess
 from datetime import datetime
 
-# %% Load the dataset
-# Define the metadata keys
-metadata_keys = ['gene', 'barcode', 'stage']
-images_keys = ['cell_image']
-crop_size = 96
-channels = [0, 1, 2, 3]
-parent_dir = '/mnt/efs/dlmbl/S-md/'
-normalizations = v2.Compose([v2.CenterCrop(crop_size)])
-yaml_file_path = "/mnt/efs/dlmbl/G-et/yaml/dataset_info_20240901_155625.yaml"
-dataset = "benchmark"
-csv_file = f"/mnt/efs/dlmbl/G-et/csv/dataset_split_{dataset}.csv"
-label_type = 'barcode'
-balance_classes = True
-output_dir = "/mnt/efs/dlmbl/G-et/"
-find_port = True
+import torch
+from torch import optim
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+import torchvision.transforms as v2
+import torchview
+import pandas as pd
 
-# Hyperparameters
-batch_size = 16
-num_workers = 8
-epochs = 30
-model_name = "Vgg2D"
-transform = "min"
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from src.data.dataset import ZarrCellDataset
+from src.data.dataloader import collate_wrapper
+from src.data.utils import read_config
+from src.models.vgg2d import Vgg2D
 
-run_name = f"{model_name}_transform_{transform}_{dataset}"
+parser = argparse.ArgumentParser(description='VGG Classifier Training')
 
-folder_suffix = datetime.now().strftime("%Y%m%d_%H%M_") + run_name
-log_path = output_dir + "logs/static/Matteo/"+ folder_suffix + "/"
-checkpoint_path = output_dir + "checkpoints/static/Matteo/" + folder_suffix + "/"
+# Dataset and file paths
+parser.add_argument('--parent_dir', type=str, default='/lab/barcheese01/aconcagua_results/primary_screen_patches', help='Parent directory of the dataset')
+parser.add_argument('--csv_file', type=str, default='/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_CCT2-nontargeting.csv', help='CSV file with dataset information')
+parser.add_argument('--yaml_file', type=str, default='/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_CCT2-nontargeting.yaml', help='YAML file with dataset info')
+parser.add_argument('--output_dir', type=str, default='/lab/barcheese01/aconcagua_results', help='Output directory')
+parser.add_argument('--dataset', type=str, default='CCT2-nontargeting', help='Dataset name')
 
-df = pd.read_csv(csv_file)
-class_names = df[label_type].sort_values().unique().tolist()
+# Model parameters
+parser.add_argument('--model_name', type=str, default='VGG2D', help='Model name')
+
+# Training parameters
+parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+parser.add_argument('--num_workers', type=int, default=12, help='Number of workers for data loading')
+parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+parser.add_argument('--label_type', type=str, default='gene', help='Type of label to use')
+
+# Data processing parameters
+parser.add_argument('--crop_size', type=int, default=96, help='Size of image crop')
+parser.add_argument('--transform', type=str, default='min', help='Masking type')
+parser.add_argument('--metadata_keys', nargs='+', default=['gene', 'barcode', 'stage'], help='Metadata keys')
+parser.add_argument('--images_keys', nargs='+', default=['cell_image'], help='Image keys')
+parser.add_argument('--channels', nargs='+', type=int, default=[0, 1, 2, 3], help='Channels to use')
+
+# Misc
+parser.add_argument('--find_port', type=bool, default=True, help='Whether to find an available port')
+
+args = parser.parse_args()
+
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Function to find an available port
+def find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+# Launch TensorBoard on the browser
+def launch_tensorboard(log_dir):
+    port = find_free_port()
+    tensorboard_cmd = f"tensorboard --logdir={log_dir} --port={port} --host=0.0.0.0"
+    process = subprocess.Popen(tensorboard_cmd, shell=True)
+    print(f"TensorBoard started at http://adrenaline.wi.mit.edu:{port}.")
+    print("If using VSCode remote session, forward the port using the PORTS tab next to TERMINAL.")
+    return process
+
+# Setup paths and logging
+run_name = f"{args.model_name}_crop{args.crop_size}_lr{args.lr}_transform{args.transform}_{args.dataset}"
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+log_dir = os.path.join(args.output_dir, "tensorboard", f"{timestamp}_{run_name}")
+log_path = os.path.join(args.output_dir, "logs", f"{timestamp}_{run_name}")
+checkpoint_path = os.path.join(args.output_dir, "checkpoints", f"{timestamp}_{run_name}")
+
+for path in [log_dir, log_path, checkpoint_path]:
+    os.makedirs(path, exist_ok=True)
+
+# Launch tensorboard
+if args.find_port:
+    tensorboard_process = launch_tensorboard(os.path.dirname(log_dir))
+logger = SummaryWriter(log_dir=log_dir)
+
+# Create datasets
+dataset_mean, dataset_std = read_config(args.yaml_file)
+normalizations = v2.Compose([v2.CenterCrop(args.crop_size)])
+
+train_dataset = ZarrCellDataset(
+    parent_dir=args.parent_dir,
+    csv_file=args.csv_file,
+    split='train',
+    channels=args.channels, 
+    mask=args.transform,
+    normalizations=normalizations,
+    interpolations=None,
+    mean=dataset_mean, 
+    std=dataset_std
+)
+
+val_dataset = ZarrCellDataset(
+    parent_dir=args.parent_dir,
+    csv_file=args.csv_file,
+    split='val',
+    channels=args.channels, 
+    mask=args.transform,
+    normalizations=normalizations,
+    interpolations=None,
+    mean=dataset_mean, 
+    std=dataset_std
+)
+
+# Create DataLoaders
+train_dataloader = DataLoader(
+    train_dataset, 
+    batch_size=args.batch_size, 
+    shuffle=True, 
+    num_workers=args.num_workers,    
+    collate_fn=collate_wrapper(
+        metadata_keys=args.metadata_keys, 
+        images_keys=args.images_keys)
+)
+
+val_dataloader = DataLoader(
+    val_dataset, 
+    batch_size=args.batch_size, 
+    shuffle=False, 
+    num_workers=args.num_workers,    
+    collate_fn=collate_wrapper(
+        metadata_keys=args.metadata_keys, 
+        images_keys=args.images_keys)
+)
+
+# Get class names and number of classes
+df = pd.read_csv(args.csv_file)
+class_names = df[args.label_type].sort_values().unique().tolist()
 num_classes = len(class_names)
 print(f"Class names: {class_names}")
 
-# %% Load the training dataset
-# Create the dataset
-dataset_mean, dataset_std = read_config(yaml_file_path)
-dataset = ZarrCellDataset(
-    parent_dir = parent_dir,
-    csv_file = csv_file, 
-    split='train',
-    channels=[0, 1, 2, 3], 
-    mask=transform, 
-    normalizations=normalizations,
-    interpolations=None, 
-    mean=dataset_mean, 
-    std=dataset_std
-)
-
-if balance_classes:
-    df = pd.read_csv(csv_file)
-    df = df[df['split'] == 'train']
-    all_labels = df[label_type].tolist()
-    weights = [1 / all_labels.count(label) for label in all_labels]
-    print(f"Weighting classes: {np.unique(weights)}")
-    balanced_sampler = torch.utils.data.WeightedRandomSampler(
-        weights=weights,
-        num_samples=len(dataset),
-        replacement=True
-    )
-    dataloader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        num_workers=num_workers,
-        sampler=balanced_sampler,
-        collate_fn=collate_wrapper(metadata_keys, images_keys),
-        drop_last=True
-    )
-else:
-    # Create a DataLoader for the dataset
-    dataloader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=num_workers,
-        collate_fn=collate_wrapper(metadata_keys, images_keys)
-    )
-
-# %% Load the validation dataset
-val_dataset = ZarrCellDataset(
-    parent_dir = '/mnt/efs/dlmbl/S-md/',
-    csv_file = csv_file, 
-    split='val',
-    channels=[0, 1, 2, 3], 
-    mask='min', 
-    normalizations=normalizations,
-    interpolations=None, 
-    mean=dataset_mean, 
-    std=dataset_std
-)
-
-# Create a DataLoader for the validation dataset
-val_dataloader = DataLoader(
-    val_dataset, 
-    batch_size=batch_size, 
-    shuffle=True, 
-    num_workers=num_workers,
-    collate_fn=collate_wrapper(metadata_keys, images_keys)
-)
-# %%
-# print the length of both datasets
-print(len(dataset), len(val_dataset))
-
-# %% Define the model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = Vgg2D(
-    input_size=(96, 96),
-    input_fmaps=4,
+# Create the model
+classifier = Vgg2D(
+    input_size=(args.crop_size, args.crop_size),
+    input_fmaps=len(args.channels),
     output_classes=num_classes,
 )
-model = model.to(device)
 
-# %% Define the loss function
-loss_function = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+torchview.draw_graph(
+    classifier,
+    train_dataset[0]['cell_image'].unsqueeze(0),
+    roll=True,
+    depth=3,  # adjust depth to zoom in.
+    device="cpu",
+    save_graph=True,
+    filename=os.path.join("graphs", run_name)
+)
 
-# %% Training loop
-losses = []
-val_losses = []
-val_accuracies = []
-for epoch in range(epochs):
-    model.train()
-    epoch_loss = 0
-    for batch in tqdm(dataloader, desc=f"Epoch {epoch}", total=len(dataloader)):
-        images, labels = batch['cell_image'], batch[label_type]
-        labels = torch.tensor(
-            [class_names.index(label) for label in labels]
-        )
-        images = images.to(device)
-        labels = labels.to(device)
+classifier = classifier.to(device)
 
+# Define the loss function and optimizer
+criterion = torch.nn.CrossEntropyLoss()
+optimizer = optim.Adam(classifier.parameters(), lr=args.lr)
+
+# Define training function
+training_log = []
+epoch_log = []
+
+def train(epoch, print_interval=10, log_interval=100):
+    classifier.train()
+    train_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, batch in enumerate(train_dataloader):
+        data = batch['cell_image'].to(device)
+        labels = torch.tensor([class_names.index(label) for label in batch[args.label_type]]).to(device)
+        
         optimizer.zero_grad()
-        output = model(images)
-        loss = loss_function(output, labels)
+        outputs = classifier(data)
+        loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-        epoch_loss += loss.item()
-    print(f"Epoch {epoch}, loss: {epoch_loss / len(dataloader)}")
-    losses.append(epoch_loss / len(dataloader))
-
-    model.eval()
-    epoch_val_loss = 0
-    correct = 0
-    with torch.inference_mode():
-        for batch in tqdm(val_dataloader, desc=f"Validation", total=len(val_dataloader)):
-            images, labels = batch['cell_image'], batch[label_type]
-            labels = torch.tensor(
-                [class_names.index(label) for label in labels]
-            )
-            images = images.to(device)
-            labels = labels.to(device)
-
-            output = model(images)
-            loss = loss_function(output, labels)
-            epoch_val_loss += loss.item()
-
-            correct += (output.argmax(dim=1) == labels).sum().item()
-    print(f"Validation loss: {epoch_val_loss / len(val_dataloader)}")
-    val_losses.append(epoch_val_loss / len(val_dataloader))
-    print(f"Validation accuracy: {correct / len(val_dataset)}")
-    val_accuracies.append(correct / len(val_dataset))
-
-    # Save the model
-    state_dict = {
+        
+        train_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+        
+        if batch_idx % print_interval == 0:
+            print(f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_dataloader.dataset)} "
+                  f"({100. * batch_idx / len(train_dataloader):.0f}%)]\tLoss: {loss.item():.6f}")
+        
+        if batch_idx % log_interval == 0:
+            step = epoch * len(train_dataloader) + batch_idx
+            
+            # Log scalar values
+            logger.add_scalar("train/loss", loss.item(), step)
+            logger.add_scalar("train/accuracy", 100. * correct / total, step)
+            
+            # Log detailed metrics
+            row = {
+                'epoch': epoch,
+                'batch_idx': batch_idx,
+                'loss': loss.item(),
+                'accuracy': 100. * correct / total
+            }
+            training_log.append(row)
+            
+            # # Log images and predictions
+            # logger.add_images("train/input", data[:4].cpu(), step)
+            # logger.add_text("train/predictions", str(predicted[:4].tolist()), step)
+            # logger.add_text("train/ground_truth", str(labels[:4].tolist()), step)
+            
+    train_loss /= len(train_dataloader)
+    train_accuracy = 100. * correct / total
+    
+    # Save epoch summary
+    epoch_row = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch_loss': epoch_loss / len(dataloader),
-        'epoch_val_loss': epoch_val_loss / len(val_dataloader),
-        'val_accuracy': correct / len(val_dataset)
+        'train_loss': train_loss,
+        'train_accuracy': train_accuracy
     }
-    torch.save(state_dict, checkpoint_path + f"epoch_{epoch}.pt")
+    epoch_log.append(epoch_row)
 
+    print(f'====> Epoch: {epoch} Average loss: {train_loss:.4f} Accuracy: {train_accuracy:.4f}')
+    
+    return train_loss, train_accuracy
 
-# %% Plot the loss
-plt.plot(losses, label="Train")
-plt.plot(val_losses, label="Validation")
-plt.legend()
-plt.show()
-plt.plot(val_accuracies, label="Validation accuracy")
-plt.legend()
-plt.show()
+def validate(epoch):
+    classifier.eval()
+    val_loss = 0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_dataloader):
+            data = batch['cell_image'].to(device)
+            labels = torch.tensor([class_names.index(label) for label in batch[args.label_type]]).to(device)
+            
+            outputs = classifier(data)
+            loss = criterion(outputs, labels)
+            
+            val_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
 
-# %% Save the losses and accuracies
-with open(log_path / "metrics.csv", "w") as f:
-    f.write("epoch,loss,val_loss,val_accuracy\n")
-    for i in range(epochs):
-        f.write(f"{i},{losses[i]},{val_losses[i]},{val_accuracies[i]}\n")
+    val_loss /= len(val_dataloader)
+    val_accuracy = 100. * correct / total
+    print(f"Validation Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.2f}%")
+    
+    # Log to TensorBoard
+    logger.add_scalar("val/loss", val_loss, epoch)
+    logger.add_scalar("val/accuracy", val_accuracy, epoch)
+    
+    return val_loss, val_accuracy
+
+# Main training loop
+best_val_loss = float('inf')
+for epoch in range(args.epochs):
+    train_loss, train_accuracy = train(epoch, log_interval=100)
+    val_loss, val_accuracy = validate(epoch)
+    
+    # Save checkpoint
+    is_best = val_loss < best_val_loss
+    best_val_loss = min(val_loss, best_val_loss)
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': classifier.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_loss': train_loss,
+        'train_accuracy': train_accuracy,
+        'val_loss': val_loss,
+        'val_accuracy': val_accuracy,
+        'best_val_loss': best_val_loss
+    }
+    torch.save(checkpoint, os.path.join(checkpoint_path, f"epoch_{epoch}.pt"))
+    if is_best:
+        torch.save(checkpoint, os.path.join(checkpoint_path, "best_model.pt"))
+    
+    # Save logs
+    pd.DataFrame(training_log).to_csv(os.path.join(log_path, "training_log.csv"), index=False)
+    pd.DataFrame(epoch_log).to_csv(os.path.join(log_path, "epoch_log.csv"), index=False)
+
+# Flush the logger and close
+logger.flush()
+logger.close()
+
+# If tensorboard was launched, terminate the process
+if args.find_port:
+    tensorboard_process.terminate()

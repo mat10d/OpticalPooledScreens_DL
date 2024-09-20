@@ -132,7 +132,7 @@ class ResNet18Dec(nn.Module):
         x = self.layer3(x)
         x = self.layer2(x)
         x = self.layer1(x)
-        x = torch.sigmoid(self.conv1(x))
+        x = self.conv1(x)  # no activation function here, previously x = torch.sigmoid(self.conv1(x))
         return x
     
     
@@ -147,7 +147,6 @@ class VAEResNet18(nn.Module):
         mu, log_var = self.encoder(x)
         z = self.reparameterize(mu, log_var)
         x = self.decoder(z)
-        # return x, z
         return x, mu, log_var
     
     @staticmethod

@@ -88,9 +88,9 @@ class Decoder(nn.Module):
         return F.sigmoid(self.conv2(h))
 
 
-class VAE(nn.Module):
+class VAE_vanilla(nn.Module):
     def __init__(self, encoder, decoder):
-        super(VAE, self).__init__()
+        super(VAE_vanilla, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
 

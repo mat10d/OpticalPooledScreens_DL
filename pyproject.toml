@@ -28,13 +28,14 @@ dependencies = [
     "pyyaml",
     "scikit-learn",
     "seaborn",
+    "piq",
+    "tensorboard",
+    "graphviz",
+    "torchview",
 ]
 
 [project.optional-dependencies]
 dev = [
     "tqdm",
-    "tensorboard",
-    "torchview",
-    "graphviz",
     "pytest",
 ]
