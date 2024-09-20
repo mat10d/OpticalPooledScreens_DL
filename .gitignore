@@ -129,6 +129,7 @@ pyrepo
 /scripts/latent/
 /scripts/train/old/
 /scripts/train/graphs/
+/scripts/train/latent/
 
 /notebooks/cellprofiler_benchmark_static/
 /notebooks/dataset/
