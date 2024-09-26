@@ -1,7 +1,18 @@
 # data files
 *.zarr
 *.tiff
-*.tif
+*.
+
+# output files
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.txt
+*.log
+*.pkl
+*.h5
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -124,13 +135,10 @@ pyrepo
 # Output files
 *.out
 
-#logs
-/scripts/graphs/
-/scripts/latent/
-/scripts/train/old/
-/scripts/train/graphs/
-/scripts/train/latent/
-
-/notebooks/cellprofiler_benchmark_static/
-/notebooks/dataset/
-/notebooks/static/
+# ignore all folders that have graph, old, latent or ongoing in their name
+**/graph/**
+**/graphs/**
+**/old/**
+**/latent/**
+**/ongoing/**
+**/*_scratch/**

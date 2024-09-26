@@ -76,7 +76,7 @@ class DatasetTable:
         print(f"Dataset CSV saved to {output_file}")
 
 class DatasetSplitter:
-    def __init__(self, parent_file, output_file, gene_list=None, stage_list=None, sample_size=None, balance_classes=False, train_ratio=0.7, val_ratio=0.15):
+    def __init__(self, parent_file, output_file, gene_list=None, stage_list=None, sample_size=None, balance_classes=False, train_ratio=0.7, val_ratio=0.15, number_nt_guides=None):
         self.parent_file = Path(parent_file)
         self.output_file = Path(output_file)
         self.gene_list = gene_list
@@ -85,6 +85,7 @@ class DatasetSplitter:
         self.balance_classes = balance_classes
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
+        self.number_nt_guides = number_nt_guides
 
     def split_data(self, group):
         num_cells = len(group)
@@ -119,6 +120,18 @@ class DatasetSplitter:
             df = df.groupby('gene').apply(lambda x: x.sample(n=min_class_size, random_state=42)).reset_index(drop=True)
 
         df = df.groupby('gene').apply(self.split_data).reset_index(drop=True)
+
+        if self.number_nt_guides is not None:
+            nt_guides = df[df['gene'] == 'nontargeting']
+            other_guides = df[df['gene'] != 'nontargeting']
+
+            nt_barcodes = nt_guides['barcode'].unique()
+
+            selected_nt_barcodes = np.random.choice(nt_barcodes, self.number_nt_guides, replace=False)
+
+            nt_guides = nt_guides[nt_guides['barcode'].isin(selected_nt_barcodes)]
+
+            df = pd.concat([nt_guides, other_guides])
 
         df.to_csv(self.output_file, index=False)
 

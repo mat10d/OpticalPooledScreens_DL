@@ -79,19 +79,19 @@ def launch_tensorboard(log_dir):
 
 # Setup paths and logging
 run_name = f"{args.model_name}_crop_size_{args.crop_size}_nc_{args.nc}_z_dim_{args.z_dim}_lr_{args.lr}_beta_{args.beta}_transform_{args.transform}_loss_{args.loss_type}_{args.dataset}"
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-folder_suffix = timestamp + "_" + run_name
-log_path = os.path.join(args.output_dir, "logs", folder_suffix)
-checkpoint_path = os.path.join(args.output_dir, "checkpoints", folder_suffix)
-tensorboard_path = os.path.join(args.output_dir, "tensorboard")
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+log_dir = os.path.join(args.output_dir, "tensorboard", f"{timestamp}_{run_name}")
+log_path = os.path.join(args.output_dir, "logs", f"{timestamp}_{run_name}")
+checkpoint_path = os.path.join(args.output_dir, "checkpoints", f"{timestamp}_{run_name}")
 
-for path in [log_path, checkpoint_path, tensorboard_path]:
+
+for path in [log_dir, log_path, checkpoint_path]:
     os.makedirs(path, exist_ok=True)
 
 # Launch tensorboard
 if args.find_port:
-    tensorboard_process = launch_tensorboard(tensorboard_path)
-logger = SummaryWriter(log_dir=tensorboard_path)
+    tensorboard_process = launch_tensorboard(os.path.dirname(log_dir))
+logger = SummaryWriter(log_dir=log_dir)
 
 # Create datasets
 dataset_mean, dataset_std = read_config(args.yaml_file)
@@ -177,8 +177,6 @@ def loss_function(recon_x, x, mu, logvar):
 
 # Define training function
 training_log = []
-epoch_log = []
-
 def train(epoch, print_interval=10, log_interval=100):
     vae.train()
     train_loss = 0
@@ -229,9 +227,9 @@ def train(epoch, print_interval=10, log_interval=100):
             }
             training_log.append(row)
 
-            logger.add_scalar("train_loss", loss.item(), step)
-            logger.add_scalar("train_RECON", RECON.item(), step)
-            logger.add_scalar("train_KLD", KLD.item(), step)
+            logger.add_scalar("train_VAE/loss", loss.item(), step)
+            logger.add_scalar("train_VAE/RECON", RECON.item(), step)
+            logger.add_scalar("train_VAE/KLD", KLD.item(), step)
             
  
             input_image = data.to("cpu").detach()       
@@ -254,15 +252,6 @@ def train(epoch, print_interval=10, log_interval=100):
     train_loss /= len(train_dataloader)
     train_recon /= len(train_dataloader)
     train_kld /= len(train_dataloader)
-    
-    # Save epoch summary
-    epoch_raw = {
-        'epoch': epoch,
-        'train_loss': train_loss,
-        'train_recon': train_recon,
-        'train_kld': train_kld
-    }
-    epoch_log.append(epoch_raw)
 
     print('====> Epoch: {} Average loss: {:.4f} Train RECON: {:.4f} Train KLD: {:.4f}'.format(epoch, train_loss, train_recon, train_kld))
     
@@ -293,12 +282,13 @@ def validate(epoch):
     print(f"Validation Loss: {val_loss:.4f}, RECON: {val_recon:.4f}, KLD: {val_kld:.4f}")
 
     # Log to TensorBoard
-    logger.add_scalar("val_loss", val_loss, epoch)
-    logger.add_scalar("val_RECON", val_recon, epoch)
-    logger.add_scalar("val_KLD", val_kld, epoch)
+    logger.add_scalar("val_VAE/loss", val_loss, epoch)
+    logger.add_scalar("val_VAE/RECON", val_recon, epoch)
+    logger.add_scalar("val_VAE/KLD", val_kld, epoch)
 
     return val_loss, val_recon, val_kld
 
+epoch_log = []
 # Main training loop
 best_val_loss = float('inf')
 for epoch in range(args.epochs):
@@ -313,12 +303,28 @@ for epoch in range(args.epochs):
         'model_state_dict': vae.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'train_loss': train_loss,
+        'train_recon': train_recon,
+        'train_kld': train_kld,
         'val_loss': val_loss,
+        'val_recon': val_recon,
+        'val_kld': val_kld,
         'best_val_loss': best_val_loss
     }
     torch.save(checkpoint, os.path.join(checkpoint_path, f"epoch_{epoch}.pt"))
     if is_best:
         torch.save(checkpoint, os.path.join(checkpoint_path, "best_model.pt"))
+
+    # Update epoch_log with both training and validation metrics
+    row = {
+        'epoch': epoch,
+        'train_loss': train_loss,
+        'train_recon': train_recon,
+        'train_kld': train_kld,
+        'val_loss': val_loss,
+        'val_recon': val_recon,
+        'val_kld': val_kld
+    }
+    epoch_log.append(row)
 
     # Save logs
     pd.DataFrame(training_log).to_csv(os.path.join(log_path, "training_log.csv"), index=False)

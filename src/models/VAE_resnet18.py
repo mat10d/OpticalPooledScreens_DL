@@ -154,3 +154,37 @@ class VAEResNet18(nn.Module):
         std = torch.exp(logvar / 2) # in log-space, squareroot is divide by two
         epsilon = torch.randn_like(std)
         return epsilon * std + mean
+
+class ResNet18Classifier(nn.Module):
+    def __init__(self, num_classes, nc=3):
+        super().__init__()
+        self.in_planes = 64
+        self.conv1 = nn.Conv2d(nc, 64, kernel_size=3, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(BasicBlockEnc, 64, 2, stride=1)
+        self.layer2 = self._make_layer(BasicBlockEnc, 128, 2, stride=2)
+        self.layer3 = self._make_layer(BasicBlockEnc, 256, 2, stride=2)
+        self.layer4 = self._make_layer(BasicBlockEnc, 512, 2, stride=2)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(p=0.5)
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(self, BasicBlockEnc, planes, num_Blocks, stride):
+        strides = [stride] + [1]*(num_Blocks-1)
+        layers = []
+        for stride in strides:
+            layers += [BasicBlockEnc(self.in_planes, stride)]
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = torch.relu(self.bn1(self.conv1(x)))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.adaptive_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.dropout(x)
+        x = self.fc(x)
+        return x
