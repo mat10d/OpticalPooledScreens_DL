@@ -182,7 +182,7 @@ class VAE_Evaluator:
                 total_kld += KLD.item()
 
                 if batch_idx == 0:
-                    self._save_image(data, recon_batch, split)
+                    self._save_image(data, recon_batch, metadata, split)
 
                 if self.config['sampling_number'] > 1:
                     # print('Sampling {} times...'.format(self.config['sampling_number']))
@@ -440,14 +440,14 @@ class VAE_Evaluator:
         except Exception as e:
             print(f"Error in _plot_kernel_density: {str(e)}")
             
-    def _save_image(self, data, recon, split):
+    def _save_image(self, data, recon, metadata, split):
         image_idx = np.random.randint(data.shape[0])
         original = data[image_idx].cpu().numpy()
         reconstruction = recon[image_idx].cpu().numpy()
-        
+        image_metadata = {key: value[image_idx] for key, value in zip(self.config['metadata_keys'], metadata)}
         fig, axes = plt.subplots(2, 4, figsize=(20, 10))
         
-        channel_names = ['dapi', 'gh2ax', 'tubulin', 'actin']  
+        channel_names = ['dapi', 'tubulin', 'gh2ax', 'actin']  
         
         for i in range(len(channel_names)):
             # Original image
@@ -464,6 +464,9 @@ class VAE_Evaluator:
 
         # Create filename
         filename = f"{split}_comparison.png"
+
+        # Add gene name to the title
+        fig.suptitle(f"Original vs. Reconstructed Images - Perturbation: {image_metadata}", fontsize=16)
         
         # Save the image
         plt.savefig(os.path.join(self.eval_output_dir, filename), dpi=300, bbox_inches='tight')
