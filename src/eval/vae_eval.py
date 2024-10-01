@@ -28,6 +28,8 @@ from src.data.dataloader import collate_wrapper
 from src.data.utils import read_config
 from src.models.VAE_resnet18 import VAEResNet18
 
+sys.setrecursionlimit(100000)
+
 class VAE_Evaluator:
     def __init__(self, config):
         self.config = config
@@ -232,6 +234,7 @@ class VAE_Evaluator:
         self._train_classifier(results['train']['latent_df'], results['train']['metadata']['gene'])
         
         for split in ['train', 'val', 'test']:
+            self._plot_clustermap(results[split]['latent_df'], results[split]['metadata'], split)
             clf_results = self._evaluate_classifier(results[split]['latent_df'], results[split]['metadata']['gene'])
             results[split]['clf_results'] = clf_results
 
@@ -287,6 +290,49 @@ class VAE_Evaluator:
             'classification_report': class_report,
             'confusion_matrix': conf_matrix
         }
+    
+    def _plot_clustermap(self, latents, metadata, split):
+            # Check for infinite or NaN values
+        if np.any(np.isinf(latents)) or np.any(np.isnan(latents)):
+            raise ValueError("Data contains infinite or NaN values")
+
+        # Get unique gene symbols and assign colors
+        gene_symbols = metadata['gene'].unique()
+        n_colors = len(gene_symbols)
+        colors = plt.cm.rainbow(np.linspace(0, 1, n_colors))
+        color_map = dict(zip(gene_symbols, colors))
+    
+        # Create a color list for each row
+        row_colors = metadata['gene'].map(color_map).tolist()
+    
+        # Create a clustermap with adjusted parameters
+        g = sns.clustermap(
+            latents,
+            row_cluster=True,
+            col_cluster=True,
+            cmap='viridis',
+            figsize=(20, 20),
+            cbar_kws={'label': 'Standardized Value'},
+            xticklabels=False,
+            yticklabels=False,
+            row_colors=row_colors
+        )
+    
+        # Adjust colorbar limits to show more variation
+        vmin, vmax = np.percentile(latents.values, [5, 95])
+        g.ax_heatmap.collections[0].set_clim(vmin, vmax)
+    
+        # Add title
+        plt.suptitle("Feature Clustermap", fontsize=16, y=1.02)
+    
+        # Create a custom legend for gene symbols
+        legend_elements = [plt.Rectangle((0, 0), 1, 1, fc=color_map[gene], label=gene) for gene in gene_symbols]
+        plt.legend(handles=legend_elements, title='Gene Symbols', 
+                loc='center left', bbox_to_anchor=(2, 0.5), ncol=1)
+    
+        # Save the figure
+        plt.savefig(os.path.join(self.eval_output_dir, f'{split}_clustermap.png'), bbox_inches='tight')
+        plt.close()
 
     def _save_split_results(self, split, split_results):
         # Save VAE metrics
