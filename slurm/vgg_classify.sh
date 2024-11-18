@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:1
 #SBATCH --mem=4G
-#SBATCH --output=vgg_classify_%j.out
+#SBATCH --output=out/vgg_classify_%j.out
 
 source /lab/barcheese01/miniconda3/etc/profile.d/conda.sh
 

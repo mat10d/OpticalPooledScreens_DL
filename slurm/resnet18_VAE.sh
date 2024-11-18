@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=VAE_resnet18
-#SBATCH --partition=nvidia-A6000-20
-#SBATCH --time=12:00:00
+#SBATCH --partition=nvidia-t4-20
+#SBATCH --time=7-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:1
-#SBATCH --mem=4G
-#SBATCH --output=VAE_resnet18_%j.out
+#SBATCH --mem=10G
+#SBATCH --output=out/VAE_resnet18_%j.out
 
 source /lab/barcheese01/miniconda3/etc/profile.d/conda.sh
 
@@ -25,10 +25,10 @@ VAE_RESNET_PATH="/lab/barcheese01/mdiberna/OpticalPooledScreens_DL/scripts/train
 #     --dataset "CCT2-nontargeting-diane" \
 #     --epochs 50
 
-python $VAE_RESNET_PATH \
-    --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_TRNT1-nontargeting.csv" \
-    --dataset "TRNT1-nontargeting" \
-    --epochs 50
+# python $VAE_RESNET_PATH \
+#     --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_TRNT1-nontargeting.csv" \
+#     --dataset "TRNT1-nontargeting" \
+#     --epochs 50
 
 # python $VAE_RESNET_PATH \
 #     --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_cluster_109_mitotic.csv" \
@@ -44,3 +44,18 @@ python $VAE_RESNET_PATH \
 #     --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_PPP1CC-nontargeting_interphase.csv" \
 #     --dataset "PPP1CC-nontargeting_interphase" \
 #     --epochs 50
+
+python $VAE_RESNET_PATH \
+    --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_interphase_100.csv" \
+    --dataset "dataset_interphase_100" \
+    --epochs 50
+
+python $VAE_RESNET_PATH \
+    --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_mitotic_all.csv" \
+    --dataset "dataset_mitotic_all" \
+    --epochs 50
+
+python $VAE_RESNET_PATH \
+    --csv_file "/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_interphase_500.csv" \
+    --dataset "dataset_interphase_500" \
+    --epochs 50

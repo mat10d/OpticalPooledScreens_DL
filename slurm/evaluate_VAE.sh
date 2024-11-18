@@ -6,16 +6,17 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:1
 #SBATCH --mem=12G
-#SBATCH --output=evaluate_vae_%j.out
+#SBATCH --output=out/evaluate_vae_%j.out
 
 source /lab/barcheese01/miniconda3/etc/profile.d/conda.sh
 
 conda activate ops_dl
 
 VAES=(
-    # "20240925-152429_VAE_ResNet18_crop_size_96_nc_4_z_dim_30_lr_0.0001_beta_1_transform_min_loss_MSE_CCT2-nontargeting:epoch_45"
     "20240925-185336_VAE_ResNet18_crop_size_96_nc_4_z_dim_30_lr_0.0001_beta_1_transform_min_loss_MSE_CCT2-nontargeting-diane:epoch_45"
-    # "20240925-215111_VAE_ResNet18_crop_size_96_nc_4_z_dim_30_lr_0.0001_beta_1_transform_min_loss_MSE_TRNT1-nontargeting:epoch_45"
+    "20241113-193236_VAE_ResNet18_crop_size_96_nc_4_z_dim_10_lr_0.0001_beta_1_transform_min_loss_L1_dataset_mitotic_all:epoch_20"
+    "20241109-141926_VAE_ResNet18_crop_size_96_nc_4_z_dim_30_lr_0.0001_beta_1_transform_min_loss_L1_dataset_interphase_100:epoch_51"
+    "20241109-141926_VAE_ResNet18_crop_size_96_nc_4_z_dim_10_lr_0.0001_beta_1_transform_min_loss_L1_dataset_interphase_100:epoch_57"
 )
 
 # Set the path to your evaluation script

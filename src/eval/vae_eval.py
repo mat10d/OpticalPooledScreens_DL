@@ -21,6 +21,13 @@ import umap
 from matplotlib.colors import ListedColormap
 import piq
 import seaborn as sns
+from dash import Dash, html, dcc, Output, Input, no_update
+import plotly.express as px
+from PIL import Image
+import base64
+import io
+
+
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.data.dataset import ZarrCellDataset
@@ -390,9 +397,16 @@ class VAE_Evaluator:
         summary_df.to_csv(os.path.join(self.eval_output_dir, 'summary_results.csv'))
 
     def _generate_latent_space_visualizations(self, results):
-        # Prepare the combined data
-        all_metadata = pd.concat([results[split]['metadata'].assign(split=split) for split in ['train', 'val', 'test']])
-        all_latents = pd.concat([results[split]['latent_df'] for split in ['train', 'val', 'test']])
+        # Reset index for all dataframes before concatenation
+        all_metadata = pd.concat([
+            results[split]['metadata'].reset_index(drop=True).assign(split=split) 
+            for split in ['train', 'val', 'test']
+        ], ignore_index=True)
+        
+        all_latents = pd.concat([
+            results[split]['latent_df'].reset_index(drop=True) 
+            for split in ['train', 'val', 'test']
+        ], ignore_index=True)
 
         # Create color maps for unique gene and barcode values
         unique_genes = all_metadata['gene'].unique()
@@ -403,31 +417,53 @@ class VAE_Evaluator:
         barcode_color_dict = dict(zip(unique_barcode, barcode_color_map))
 
         # Fit PCA and UMAP on all data
-        pca = PCA(n_components=2)
         scaler = StandardScaler()
         all_latents_scaled = scaler.fit_transform(all_latents)
-        all_latents_pca = pca.fit_transform(all_latents_scaled)
+        pca = PCA(n_components=2)
+        pca_coords = pca.fit_transform(all_latents_scaled)
+
+        # Create PCA dataframe with metadata
+        pca_df = pd.DataFrame(pca_coords, columns=['PCA1', 'PCA2'])
+        pca_df = pd.concat([all_metadata.reset_index(drop=True), pca_df], axis=1)
+        pca_df.to_csv(os.path.join(self.eval_output_dir, 'pca_coordinates.csv'), index=False)
+
+        print(f"PCA shape: {pca_df.shape}")
+        print(f"Metadata shape: {all_metadata.shape}")
+        print(f"First few rows of PCA data:")
+        print(pca_df.head())
 
         try:
             reducer = umap.UMAP(random_state=42, n_jobs=1)
-            all_latents_umap = reducer.fit_transform(all_latents_scaled)
+            umap_coords = reducer.fit_transform(all_latents_scaled)
+            
+            # Create UMAP dataframe with metadata
+            umap_df = pd.DataFrame(umap_coords, columns=['UMAP1', 'UMAP2'])
+            umap_df = pd.concat([all_metadata.reset_index(drop=True), umap_df], axis=1)
+            umap_df.to_csv(os.path.join(self.eval_output_dir, 'umap_coordinates.csv'), index=False)
+
+            print(f"UMAP shape: {umap_df.shape}")
+            print(f"First few rows of UMAP data:")
+            print(umap_df.head())
         except ImportError:
             print("UMAP not installed. Skipping UMAP visualization.")
             reducer = None
 
         # Generate visualizations
-        for method, data in [('PCA', all_latents_pca), ('UMAP', all_latents_umap if reducer else None)]:
+        for method, data, viz_df in [
+            ('PCA', pca_coords, pca_df), 
+            ('UMAP', umap_coords if reducer else None, umap_df if reducer else None)
+        ]:
             if data is None:
                 continue
 
             # 1. Plots colored by gene
-            self._plot_latent_space(data, all_metadata, gene_color_dict, 'gene', method)
+            self._plot_latent_space(data, viz_df, gene_color_dict, 'gene', method)
 
             # 2. Plots colored by barcode
-            self._plot_latent_space(data, all_metadata, barcode_color_dict, 'barcode', method)
+            self._plot_latent_space(data, viz_df, barcode_color_dict, 'barcode', method)
 
             # 3. Kernel density plots
-            self._plot_kernel_density(data, all_metadata, method)
+            self._plot_kernel_density(data, viz_df, method)
 
     def _plot_latent_space(self, data, metadata, color_dict, color_by, method):
         legend_elements = [plt.Line2D([0], [0], marker='o', color='w', 
@@ -493,7 +529,7 @@ class VAE_Evaluator:
         image_metadata = {key: value[image_idx] for key, value in zip(self.config['metadata_keys'], metadata)}
         fig, axes = plt.subplots(2, 4, figsize=(20, 10))
         
-        channel_names = ['dapi', 'tubulin', 'gh2ax', 'actin']  
+        channel_names = self.config['channel_names']
         
         for i in range(len(channel_names)):
             # Original image
@@ -557,3 +593,221 @@ class VAE_Evaluator:
         plt.tight_layout()
         plt.savefig(os.path.join(self.eval_output_dir, f'{split}_confusion_matrix_percent.png'))
         plt.close()
+
+class LatentSpaceVisualizer:
+    def __init__(self, eval_output_dir, config):
+        """
+        Initialize visualization dashboard with pre-computed VAE evaluation results
+        
+        Args:
+            eval_output_dir: Directory containing evaluation results (should already include epoch)
+            config: Original configuration used for evaluation
+        """
+        self.eval_dir = eval_output_dir  # This path should already include the epoch
+        print(f"Using evaluation directory: {self.eval_dir}")
+        
+        self.config = config
+        self.app = Dash(__name__)
+        
+        # Load cached results
+        self.cached_data = self._load_evaluation_results()
+        if not self.cached_data:
+            raise ValueError(f"No data found in {self.eval_dir}. Has the model been evaluated?")
+            
+        self.dataset_train = self._initialize_dataset(split='train')
+        self.dataset_val = self._initialize_dataset(split='val')
+        self.dataset_test = self._initialize_dataset(split='test')
+        
+        self.setup_layout()
+        self.setup_callbacks()
+    
+    def _load_evaluation_results(self):
+        """Load pre-computed UMAP and PCA coordinates"""
+        print(f"Loading visualization data from: {self.eval_dir}")
+        
+        umap_file = os.path.join(self.eval_dir, 'umap_coordinates.csv')
+        pca_file = os.path.join(self.eval_dir, 'pca_coordinates.csv')
+        
+        data = {}
+        if os.path.exists(umap_file):
+            data['umap'] = pd.read_csv(umap_file)
+            print(f"Loaded UMAP data with shape: {data['umap'].shape}")
+        
+        if os.path.exists(pca_file):
+            data['pca'] = pd.read_csv(pca_file)
+            print(f"Loaded PCA data with shape: {data['pca'].shape}")
+            
+        if not data:
+            raise ValueError(f"No coordinate data found in {self.eval_dir}")
+            
+        return data
+    
+    def _initialize_dataset(self, split):
+        """Initialize datasets for all splits"""
+        dataset_mean, dataset_std = read_config(self.config['yaml_file'])
+        normalizations = v2.Compose([v2.CenterCrop(self.config['crop_size'])])
+        
+        dataset = ZarrCellDataset(
+                parent_dir=self.config['parent_dir'],
+                csv_file=self.config['csv_file'],
+                split=split,
+                channels=self.config['channels'],
+                mask=self.config['transform'],
+                normalizations=normalizations,
+                interpolations=None,
+                mean=dataset_mean,
+                std=dataset_std
+            )
+        return dataset
+
+    def setup_layout(self):
+        self.app.layout = html.Div([
+            html.H1('Dimensionality Reduction Visualization', style={'textAlign': 'center'}),
+            
+            # Controls
+            html.Div([
+                html.Div([
+                    html.Label('Visualization Type:'),
+                    dcc.Dropdown(
+                        id='viz-type-dropdown',
+                        options=[
+                            {'label': 'UMAP', 'value': 'umap'},
+                            {'label': 'PCA', 'value': 'pca'}
+                        ],
+                        value='umap'
+                    )
+                ], style={'width': '200px', 'margin': '10px'}),
+                
+                html.Div([
+                    html.Label('Color By:'),
+                    dcc.Dropdown(
+                        id='color-dropdown',
+                        options=[
+                            {'label': 'Gene', 'value': 'gene'},
+                            {'label': 'Barcode', 'value': 'barcode'},
+                            {'label': 'Split', 'value': 'split'}
+                        ],
+                        value='gene'
+                    )
+                ], style={'width': '200px', 'margin': '10px'}),
+                html.Div([
+                    html.Label('Show Images:'),
+                    dcc.Checklist(
+                        id='show-images-switch',
+                        options=[{'label': '', 'value': True}],
+                        value=[True]
+                    )
+                ], style={'width': '200px', 'margin': '10px'})
+            ], style={'display': 'flex', 'justifyContent': 'center'}),
+            
+            # Main visualization
+            html.Div([
+                dcc.Graph(
+                    id='dim-reduction-plot',
+                    style={'width': '1200px', 'height': '600px'}
+                ),
+                dcc.Tooltip(id='hover-tooltip')
+            ], style={'display': 'flex', 'justifyContent': 'center'})
+        ])
+        
+    def setup_callbacks(self):
+        @self.app.callback(
+            Output('dim-reduction-plot', 'figure'),
+            [Input('viz-type-dropdown', 'value'),
+            Input('color-dropdown', 'value')]
+        )
+        def update_graph(viz_type, color_by):
+            df = self.cached_data[viz_type]
+            coord_cols = {'umap': ['UMAP1', 'UMAP2'], 
+                        'pca': ['PCA1', 'PCA2']}[viz_type]
+            
+            return px.scatter(
+                df,
+                x=coord_cols[0],
+                y=coord_cols[1],
+                color=color_by,
+                hover_data=['gene', 'barcode', 'split', 'cell_idx']
+            ).update_layout(
+                width=1250,  
+                height=1000
+            )
+
+        @self.app.callback(
+            [Output("hover-tooltip", "show"),
+            Output("hover-tooltip", "bbox"),
+            Output("hover-tooltip", "children")],
+            [Input("dim-reduction-plot", "hoverData"),
+            Input("viz-type-dropdown", "value"),
+            Input("color-dropdown", "value"),
+            Input("show-images-switch", "value")]
+        )
+        def show_hover_info(hover_data, viz_type, color_by, show_images):
+            if not hover_data:
+                return False, no_update, no_update
+
+            pt = hover_data['points'][0]
+            gene, barcode, split, cell_idx = pt['customdata']
+            point_color = pt.get('marker.color', '#ffffff')
+            
+            base_style = {
+                'padding': '0px', 
+                'borderRadius': '0px',
+                'backgroundColor': point_color,
+                'color': 'white' if point_color != '#ffffff' else 'black',
+                'border': '0px solid #ddd'
+            }
+            
+            if not show_images:
+                children = html.Div([
+                    html.P(f"gene: {gene}"),
+                    html.P(f"barcode: {barcode}"),
+                    html.P(f"split: {split}"),
+                    html.P(f"cell_idx: {cell_idx}")
+                ], style=base_style)
+                return True, pt['bbox'], children
+
+            try:
+                if split == 'train':
+                    cell_data = self.dataset_train[cell_idx]
+                elif split == 'val':
+                    cell_data = self.dataset_val[cell_idx]
+                elif split == 'test':
+                    cell_data = self.dataset_test[cell_idx]
+
+                images = [self._normalize_and_encode_image(cell_data["cell_image"][i]) 
+                        for i in range(len(self.config['channels']))]
+                
+                children = html.Div([
+                    html.Div([
+                        html.Div([
+                            html.Img(src=img, style={'width': '75px', 'height': '75px', 'margin': '2px'}),
+                            html.P(f'{self.config["channel_names"][i]}', 
+                                    style={'margin': '0', 'fontSize': '12px', 'textAlign': 'center'})
+                        ], style={'display': 'inline-block'}) for i, img in enumerate(images)
+                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '2px', 'justifyContent': 'center'}),
+                    
+                    html.Div([
+                        html.P(f"gene: {gene}", style={'margin': '2px', 'fontSize': '12px'}),
+                        html.P(f"barcode: {barcode}", style={'margin': '2px', 'fontSize': '12px'}),
+                        html.P(f"split: {split}", style={'margin': '2px', 'fontSize': '12px'}),
+                        html.P(f"cell_idx: {cell_idx}", style={'margin': '2px', 'fontSize': '12px'})
+                    ], style={'marginTop': '5px'})
+                ], style={'padding': '0px', 'backgroundColor': 'white', 'border': '0px solid #ddd'})
+                        
+                return True, pt['bbox'], children
+            except IndexError as e:
+                print(f"Error accessing dataset: {str(e)}")
+                return False, no_update, no_update       
+     
+    def _normalize_and_encode_image(self, image_array):
+        """Convert tensor to base64 encoded string"""
+        # Convert to numpy and normalize
+        image_array = image_array.cpu().numpy()
+        normalized = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+        image = Image.fromarray((normalized * 255).astype('uint8'))
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        return f'data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}'
+
+    def run(self, debug=True):
+        self.app.run(debug=debug)

@@ -90,6 +90,7 @@ def generate_config(checkpoint_dir, log_dir, checkpoint_name):
         'metadata_keys': ['gene', 'barcode', 'stage', 'cell_idx'],
         'images_keys': ['cell_image'],
         'channels': [0, 1, 2, 3],
+        'channel_names': ['dapi', 'tubulin', 'gh2ax', 'actin'],
         'sampling_number': 1,
         'output_dir': os.path.join('/lab/barcheese01/aconcagua_results/latent', checkpoint_dir.split('/')[-1]),
     })

@@ -103,17 +103,17 @@ from src.data.splitter import DatasetTable, DatasetSplitter
 # )
 # splitter.generate_split()
 
-splitter = DatasetSplitter(
-    parent_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_5050.csv",
-    output_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_PPP1CC-nontargeting_interphase.csv",
-    gene_list=['nontargeting', 'PPP1CC'],
-    stage_list=["interphase"],
-    balance_classes=False,
-    train_ratio=0.7,
-    val_ratio=0.15,
-    number_nt_guides=10
-)
-splitter.generate_split()
+# splitter = DatasetSplitter(
+#     parent_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_5050.csv",
+#     output_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_PPP1CC-nontargeting_interphase.csv",
+#     gene_list=['nontargeting', 'PPP1CC'],
+#     stage_list=["interphase"],
+#     balance_classes=False,
+#     train_ratio=0.7,
+#     val_ratio=0.15,
+#     number_nt_guides=10
+# )
+# splitter.generate_split()
 
 # splitter = DatasetSplitter(
 #     parent_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_5050.csv",
@@ -124,3 +124,24 @@ splitter.generate_split()
 #     val_ratio=0.15
 # )
 # splitter.generate_split()
+
+splitter = DatasetSplitter(
+    parent_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_5050.csv",
+    output_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_mitotic_all.csv",
+    stage_list=["mitotic"],
+    balance_classes=False,
+    train_ratio=0.7,
+    val_ratio=0.15
+)
+splitter.generate_split()
+
+splitter = DatasetSplitter(
+    parent_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_5050.csv",
+    output_file="/lab/barcheese01/aconcagua_results/primary_screen_patches_splits/dataset_interphase_500.csv",
+    stage_list=["interphase"],
+    sample_size=500,
+    balance_classes=False,
+    train_ratio=0.7,
+    val_ratio=0.15
+)
+splitter.generate_split()
