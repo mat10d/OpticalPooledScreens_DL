@@ -53,14 +53,18 @@ def parse_checkpoint_dir(checkpoint_dir):
             value = match.group(1)
             result[param] = int(value) if value.isdigit() else float(value) if value.replace('.', '').isdigit() else value
     
+    # Updated dataset parsing
     dataset_match = re.search(r'loss_[^_]+_(.+)$', filename)
     if dataset_match:
-        result['dataset'] = dataset_match.group(1)
+        dataset_name = dataset_match.group(1)
+        # Remove 'dataset_' prefix if it exists
+        if dataset_name.startswith('dataset_'):
+            dataset_name = dataset_name[8:]
+        result['dataset'] = dataset_name
     else:
         result['dataset'] = 'unknown'
 
     print(f"Dataset: {result['dataset']}")
-
     return result
 
 def generate_config(checkpoint_dir, log_dir, checkpoint_name):

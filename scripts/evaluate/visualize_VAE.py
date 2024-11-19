@@ -4,7 +4,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from src.eval.vae_eval import LatentSpaceVisualizer, VAE_Evaluator
+from src.eval.vae_eval import LatentSpaceVisualizer
 from evaluate_VAE import generate_config
 
 def main():

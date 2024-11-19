@@ -1,40 +1,58 @@
 import os
 import sys
+import io
+import base64
+from typing import List, Optional
 import numpy as np
+import pandas as pd
+from scipy import stats
+from scipy.spatial.distance import cdist
 import torch
 from torch.utils.data import DataLoader
 from torch.nn import functional as F
 from torchvision.transforms import v2
 from torchvision.utils import save_image
-import matplotlib.pyplot as plt
-import pandas as pd
-import yaml
-import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score
-from sklearn.metrics import accuracy_score, log_loss, confusion_matrix, classification_report, roc_curve, auc, roc_auc_score
-import umap
-from matplotlib.colors import ListedColormap
-import piq
+from sklearn.metrics import (
+    accuracy_score, 
+    log_loss, 
+    confusion_matrix, 
+    classification_report, 
+    roc_curve, 
+    auc, 
+    roc_auc_score
+)
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 import seaborn as sns
-from dash import Dash, html, dcc, Output, Input, no_update
 import plotly.express as px
 from PIL import Image
-import base64
-import io
+from dash import Dash, html, dcc, Output, Input, no_update
 
+# Optional imports with error handling
+try:
+    import umap
+except ImportError:
+    print("UMAP not installed. Some visualization features will be disabled.")
 
+try:
+    import piq
+except ImportError:
+    print("PIQ not installed. Some quality metrics will be disabled.")
 
+# Local imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.data.dataset import ZarrCellDataset
 from src.data.dataloader import collate_wrapper
 from src.data.utils import read_config
 from src.models.VAE_resnet18 import VAEResNet18
 
+# Increase recursion limit for deep operations
 sys.setrecursionlimit(100000)
 
 class VAE_Evaluator:
@@ -730,6 +748,9 @@ class LatentSpaceVisualizer:
             ).update_layout(
                 width=1250,  
                 height=1000
+            ).update_traces(
+                hovertemplate=None,
+                hoverinfo='none'
             )
 
         @self.app.callback(
@@ -811,3 +832,286 @@ class LatentSpaceVisualizer:
 
     def run(self, debug=True):
         self.app.run(debug=debug)
+
+class VIEWSAnalyzer:
+    def __init__(self, latent_vectors_path: str, config: dict, split: str, n_top_dims: Optional[int] = 25):
+        """Initialize VIEWS analyzer with latent vectors data and dataset
+        
+        Args:
+            latent_vectors_path: Path to CSV containing latent vectors
+            config: Configuration dictionary
+            split: Dataset split to use
+            n_top_dims: Number of top latent dimensions to consider for constraints.
+                       If None, uses all dimensions.
+        """
+        # Load latent vectors
+        self.data = pd.read_csv(latent_vectors_path)
+        self.latent_cols = [col for col in self.data.columns if col.startswith('latent_')]
+        self.metadata_cols = [col for col in self.data.columns if not col.startswith('latent_')]
+        
+        # Store full latent vectors but also get top N if specified
+        self.latent_vectors_full = self.data[self.latent_cols].values
+        if n_top_dims is not None:
+            # Ensure n_top_dims doesn't exceed available dimensions
+            self.n_top_dims = min(n_top_dims, len(self.latent_cols))
+            # Take only the first n_top_dims columns
+            self.latent_vectors = self.latent_vectors_full[:, :self.n_top_dims]
+        else:
+            self.n_top_dims = len(self.latent_cols)
+            self.latent_vectors = self.latent_vectors_full
+        
+        # Initialize dataset
+        dataset_mean, dataset_std = read_config(config['yaml_file'])
+        normalizations = v2.Compose([v2.CenterCrop(config['crop_size'])])
+        
+        self.dataset = ZarrCellDataset(
+            parent_dir=config['parent_dir'],
+            csv_file=config['csv_file'],
+            split=split,
+            channels=config['channels'],
+            mask=config['transform'],
+            normalizations=normalizations,
+            interpolations=None,
+            mean=dataset_mean,
+            std=dataset_std
+        )
+        
+        self.config = config
+
+        # Create custom colormaps
+        self.create_custom_colormaps()
+
+    def create_custom_colormaps(self):
+        """Create custom colormaps that transition from black to each color"""
+        self.channel_colormaps = []
+        
+        # Define colors and their RGB values
+        colors = [
+            ('blue', (0, 0, 1)),
+            ('green', (0, 1, 0)),
+            ('red', (1, 0, 0)),
+            ('cyan', (0, 1, 1))
+        ]
+        
+        for color_name, rgb in colors:
+            # Create array of color positions
+            colors_array = np.zeros((256, 3))
+            for i in range(256):
+                # Linear interpolation from black (0,0,0) to target color
+                colors_array[i] = np.array([c * i / 255 for c in rgb])
+            
+            self.channel_colormaps.append(
+                LinearSegmentedColormap.from_list(f'black_to_{color_name}', colors_array)
+            )
+
+    def find_constrained_samples(self, 
+                            target_dim: int,
+                            n_samples_per_percentile: int = 3,
+                            percentiles: List[int] = [1, 15, 50, 85, 99],
+                            constraint_percentile: float = 10) -> List[List[int]]:
+        """
+        Find n_samples_per_percentile samples for each specified percentile
+        that are close to mean in all dimensions except target_dim,
+        considering only the top N dimensions if specified.
+        
+        Args:
+            target_dim: Index of the dimension to analyze (must be < n_top_dims)
+            n_samples_per_percentile: Number of samples to find for each percentile
+            percentiles: List of percentiles to sample at
+            constraint_percentile: Percentile threshold for considering points "close to mean"
+        
+        Returns:
+            List of lists, where each inner list contains indices for a specific percentile
+        """
+        if target_dim >= self.n_top_dims:
+            raise ValueError(f"target_dim ({target_dim}) must be less than n_top_dims ({self.n_top_dims})")
+            
+        # Get other dimensions (only from the top N dimensions we're considering)
+        other_dims = list(range(self.latent_vectors.shape[1]))
+        other_dims.remove(target_dim)
+        
+        # Calculate mean vector for other dimensions
+        mean_vector = np.mean(self.latent_vectors[:, other_dims], axis=0)
+        
+        # Calculate distances to mean for other dimensions
+        distances = cdist(self.latent_vectors[:, other_dims], [mean_vector]).flatten()
+        
+        # Find points close to mean in other dimensions
+        distance_threshold = np.percentile(distances, constraint_percentile)
+        close_to_mean = distances <= distance_threshold
+        
+        # Get target dimension values for close points
+        target_values = self.latent_vectors[close_to_mean, target_dim]
+        
+        # For each percentile, find n_samples_per_percentile closest samples
+        selected_indices = []
+        for percentile in percentiles:
+            threshold = np.percentile(target_values, percentile)
+            
+            # Find valid indices and sort by distance to threshold
+            valid_indices = np.where(close_to_mean)[0]
+            distances_to_threshold = np.abs(self.latent_vectors[valid_indices, target_dim] - threshold)
+            closest_indices = valid_indices[np.argsort(distances_to_threshold)[:n_samples_per_percentile]]
+            
+            selected_indices.append(closest_indices.tolist())
+        
+        return selected_indices
+
+    def get_cell_images(self, idx: int, lower_percentile: float = 1, upper_percentile: float = 99.9) -> np.ndarray:
+        """Get normalized cell images for a given index with percentile-based normalization
+        
+        Args:
+            idx: Index of the cell to retrieve
+            lower_percentile: Lower percentile for normalization clipping (default: 1)
+            upper_percentile: Upper percentile for normalization clipping (default: 99.9)
+        """
+        cell_data = self.dataset[idx]
+        images = cell_data["cell_image"]  # This should be a tensor
+        
+        # Convert to numpy and normalize each channel
+        normalized_images = []
+        for i in range(len(self.config['channels'])):
+            img = images[i].numpy()
+            
+            # Get percentile values for this image
+            min_val = np.percentile(img, lower_percentile)
+            max_val = np.percentile(img, upper_percentile)
+            
+            # Clip and normalize
+            img_clipped = np.clip(img, min_val, max_val)
+            norm_img = (img_clipped - min_val) / (max_val - min_val)
+            
+            # Ensure the range is exactly [0, 1]
+            norm_img = np.clip(norm_img, 0, 1)
+            
+            normalized_images.append(norm_img)
+            
+        return normalized_images
+    
+    def visualize_dimension(self,
+                        target_dim: int,
+                        selected_indices: List[List[int]],  
+                        output_path: Optional[str] = None,
+                        target_percentiles: List[int] = [1, 15, 50, 85, 99]) -> None:
+        """
+        Create visualization for selected samples along a dimension with cell images
+        """
+        n_percentiles = len(selected_indices)
+        
+        # Create figure
+        fig = plt.figure(figsize=(15, 10))
+        
+        # Create main GridSpec with space for density plot and 3 rows of image sets
+        outer_gs = plt.GridSpec(4, n_percentiles, 
+                        height_ratios=[1, 3, 3, 3],
+                        hspace=0.15,
+                        wspace=0.1)
+        
+        # Plot density at top
+        ax_density = fig.add_subplot(outer_gs[0, :])
+        values = self.latent_vectors[:, target_dim]
+        
+        # Get extended range percentile values
+        extended_range = np.percentile(values, [0.05, 99.95])
+        percentile_values = np.percentile(values, target_percentiles)
+        
+        # Create x_range based on extended percentiles
+        x_range = np.linspace(extended_range[0], extended_range[1], 200)
+        
+        # Compute KDE
+        kernel = stats.gaussian_kde(values)
+        density = kernel(x_range)
+        density_normalized = density / density.max()
+        
+        # Plot the normalized density
+        ax_density.fill_between(x_range, density_normalized, color='purple', alpha=0.3)
+        ax_density.plot(x_range, density_normalized, color='purple')
+        
+        # Set up the density plot
+        ax_density.set_ylim(0, 1.1)
+        ax_density.set_xlim(extended_range[0], extended_range[1])
+        ax_density.set_xticks(percentile_values)
+        ax_density.set_xticklabels([str(p) for p in target_percentiles], fontsize=8)
+        ax_density.set_yticks([])
+        ax_density.set_xlabel('')
+        ax_density.set_ylabel('Density')
+        ax_density.spines['top'].set_visible(False)
+        ax_density.spines['right'].set_visible(False)
+        ax_density.spines['left'].set_visible(False)
+
+        # Create legend patches
+        channel_names = ['DAPI', 'Tubulin', 'γH2AX', 'Actin']
+        colors = ['blue', 'green', 'red', 'cyan']
+        legend_patches = []
+        for color, name in zip(colors, channel_names):
+            patch = plt.Rectangle((0, 0), 1, 1, fc=color, alpha=0.8)
+            legend_patches.append(patch)
+
+        ax_density.legend(legend_patches, channel_names, 
+                        loc='upper right', 
+                        bbox_to_anchor=(1, 1.5), 
+                        ncol=1,
+                        frameon=False,
+                        fontsize=8)
+        
+        # Get percentiles for all samples
+        percentiles_by_group = []
+        for group_indices in selected_indices:
+            group_percentiles = []
+            for idx in group_indices:
+                value = self.latent_vectors[idx, target_dim]
+                percentile = stats.percentileofscore(values, value)
+                group_percentiles.append(percentile)
+            percentiles_by_group.append(group_percentiles)
+        
+        print(f"Percentiles by group: {percentiles_by_group}")
+        
+        # Plot cell images for each position
+        for row in range(3):  # 3 rows of sampled images
+            for col in range(n_percentiles):
+                # Create a 2x2 GridSpec for the 4 channels within this cell
+                inner_gs = outer_gs[row+1, col].subgridspec(2, 2, hspace=0.05, wspace=0.05)
+                
+                sample_idx = selected_indices[col][row]
+                cell_idx = self.data.iloc[sample_idx]['cell_idx']
+                images = self.get_cell_images(cell_idx)
+                
+                # Plot each channel
+                for i, channel_img in enumerate(images):
+                    ax = fig.add_subplot(inner_gs[i//2, i%2])
+                    ax.imshow(channel_img, cmap=self.channel_colormaps[i])
+                    ax.axis('off')
+
+                # Add percentile labels below bottom row
+                if row == 2:
+                    # Create a fake axis for the label
+                    ax_label = fig.add_subplot(outer_gs[row+1, col])
+                    ax_label.set_xticks([])
+                    ax_label.set_yticks([])
+                    ax_label.set_xlabel(f'{target_percentiles[col]}th\nPercentile', 
+                                    fontsize=10, color='black',
+                                    labelpad=5)
+                    ax_label.set_frame_on(False)
+        
+        # Add title
+        plt.suptitle(f'Latent Dimension {target_dim}', y=0.95, color='black')
+        
+        plt.tight_layout()
+        
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight',
+                    facecolor='white')
+        plt.close()
+
+    def analyze_dimension_distribution(self, target_dim: int) -> pd.DataFrame:
+        """Analyze the statistical distribution of values in the target dimension"""
+        values = self.latent_vectors[:, target_dim]
+        stats = {
+            'mean': np.mean(values),
+            'std': np.std(values),
+            'min': np.min(values),
+            'max': np.max(values),
+            'skew': pd.Series(values).skew(),
+            'kurtosis': pd.Series(values).kurtosis()
+        }
+        return pd.DataFrame([stats])
